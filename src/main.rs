@@ -17,6 +17,7 @@ struct TrailSpawner {
 
 #[derive(Component, Default, Reflect, Hash)]
 struct Trail {
+    player_handle: usize,
     death_timer: FrameTimer,
 }
 
@@ -47,6 +48,12 @@ impl FrameTimer {
         self.frames_left == self.reset_to
     }
 }
+
+const PLAYER_SIZE: f32 = 0.75;
+const BOARD_SIZE: f32 = 9.0;
+const TRAIL_LENGTH: u32 = 80;
+const TRAIL_SIZE: f32 = 0.2;
+const MOVE_SPEED: f32 = 0.03;
 
 struct GgrsConfig;
 
@@ -80,7 +87,9 @@ fn main() {
                     .with_system(rotate_players)
                     .with_system(move_players_forward.after(rotate_players))
                     .with_system(spawn_trail.after(move_players_forward))
-                    .with_system(kill_trail.after(spawn_trail)),
+                    .with_system(kill_trail.after(spawn_trail))
+                    .with_system(border_death.after(kill_trail))
+                    .with_system(trail_death.after(border_death)),
             ),
         )
         .register_rollback_type::<Transform>()
@@ -106,10 +115,23 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands) {
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
     let mut camera_bundle = Camera2dBundle::default();
     camera_bundle.projection.scaling_mode = ScalingMode::FixedVertical(10.);
     commands.spawn_bundle(camera_bundle);
+
+    commands.spawn_bundle(MaterialMesh2dBundle {
+        mesh: meshes
+            .add(shape::Circle::new(BOARD_SIZE / 2.).into())
+            .into(),
+        material: materials.add(ColorMaterial::from(Color::SEA_GREEN)),
+        transform: Transform::from_translation(Vec3::new(0., 0., 0.)),
+        ..default()
+    });
 }
 
 fn spawn_players(
@@ -121,9 +143,11 @@ fn spawn_players(
     // Player 1
     commands
         .spawn_bundle(MaterialMesh2dBundle {
-            mesh: meshes.add(shape::Circle::new(0.5).into()).into(),
+            mesh: meshes
+                .add(shape::Circle::new(PLAYER_SIZE / 2.).into())
+                .into(),
             material: materials.add(ColorMaterial::from(Color::RED)),
-            transform: Transform::from_translation(Vec3::new(-1., 0., 0.))
+            transform: Transform::from_translation(Vec3::new(-1., 0., 0.5))
                 .with_rotation(Quat::from_rotation_arc_2d(Vec2::X, -Vec2::X)),
             ..default()
         })
@@ -131,7 +155,7 @@ fn spawn_players(
             parent.spawn_bundle(MaterialMesh2dBundle {
                 mesh: meshes.add(shape::Circle::new(0.1).into()).into(),
                 material: materials.add(ColorMaterial::from(Color::ORANGE_RED)),
-                transform: Transform::from_translation(Vec3::new(0.5, 0., 1.)),
+                transform: Transform::from_translation(Vec3::new(PLAYER_SIZE / 2., 0., 1.)),
                 ..default()
             });
         })
@@ -144,9 +168,11 @@ fn spawn_players(
     // Player 2
     commands
         .spawn_bundle(MaterialMesh2dBundle {
-            mesh: meshes.add(shape::Circle::new(0.5).into()).into(),
+            mesh: meshes
+                .add(shape::Circle::new(PLAYER_SIZE / 2.).into())
+                .into(),
             material: materials.add(ColorMaterial::from(Color::BLUE)),
-            transform: Transform::from_translation(Vec3::new(1., 0., 0.))
+            transform: Transform::from_translation(Vec3::new(1., 0., 0.5))
                 .with_rotation(Quat::from_rotation_arc_2d(Vec2::X, Vec2::X)),
             ..default()
         })
@@ -154,7 +180,7 @@ fn spawn_players(
             parent.spawn_bundle(MaterialMesh2dBundle {
                 mesh: meshes.add(shape::Circle::new(0.1).into()).into(),
                 material: materials.add(ColorMaterial::from(Color::ALICE_BLUE)),
-                transform: Transform::from_translation(Vec3::new(0.5, 0., 1.)),
+                transform: Transform::from_translation(Vec3::new(PLAYER_SIZE / 2., 0., 1.)),
                 ..default()
             });
         })
@@ -263,11 +289,20 @@ fn rotate_players(
     }
 }
 
-fn move_players_forward(mut player_query: Query<&mut Transform, With<Player>>) {
-    for mut transform in player_query.iter_mut() {
-        let move_speed = 0.05;
+fn move_players_forward(
+    inputs: Res<Vec<(u8, InputStatus)>>,
+    mut player_query: Query<(&mut Transform, &Player)>,
+) {
+    for (mut transform, player) in player_query.iter_mut() {
+        let (input, _) = inputs[player.handle];
+
+        let mut speed_multiplier = 1.;
+        if input & INPUT_DASH != 0 {
+            speed_multiplier *= 2.;
+        }
+
         let movement_direction = transform.rotation * Vec3::X;
-        transform.translation += movement_direction * move_speed;
+        transform.translation += movement_direction * MOVE_SPEED * speed_multiplier;
     }
 }
 
@@ -286,13 +321,19 @@ fn spawn_trail(
             };
             commands
                 .spawn_bundle(MaterialMesh2dBundle {
-                    mesh: meshes.add(shape::Circle::new(0.1).into()).into(),
+                    mesh: meshes
+                        .add(shape::Circle::new(TRAIL_SIZE / 2.).into())
+                        .into(),
                     material: materials.add(ColorMaterial::from(color)),
-                    transform: Transform::from_translation(transform.translation),
+                    transform: Transform::from_translation(
+                        transform.translation
+                            - (PLAYER_SIZE + TRAIL_SIZE) / 2. * transform.local_x(),
+                    ),
                     ..default()
                 })
                 .insert(Trail {
-                    death_timer: FrameTimer::new(60),
+                    player_handle: player.handle,
+                    death_timer: FrameTimer::new(TRAIL_LENGTH),
                 });
         }
     }
@@ -302,6 +343,32 @@ fn kill_trail(mut commands: Commands, mut trail_query: Query<(Entity, &mut Trail
     for (entity, mut trail) in trail_query.iter_mut() {
         if trail.death_timer.tick().finished() {
             commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
+fn border_death(mut commands: Commands, player_query: Query<(Entity, &Transform), With<Player>>) {
+    for (entity, transform) in player_query.iter() {
+        if transform.translation.truncate().distance(Vec2::ZERO) > BOARD_SIZE / 2. {
+            commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
+fn trail_death(
+    mut commands: Commands,
+    player_query: Query<(Entity, &Transform), With<Player>>,
+    trail_query: Query<&Transform, With<Trail>>,
+) {
+    for (entity, player_transform) in player_query.iter() {
+        for trail_transform in trail_query.iter() {
+            let dist = player_transform
+                .translation
+                .truncate()
+                .distance(trail_transform.translation.truncate());
+            if dist < (PLAYER_SIZE + TRAIL_SIZE) / 2. {
+                commands.entity(entity).despawn_recursive();
+            }
         }
     }
 }
