@@ -1,3 +1,5 @@
+use std::env;
+
 use bevy::{
     prelude::*, render::camera::ScalingMode, sprite::MaterialMesh2dBundle, tasks::IoTaskPool,
 };
@@ -192,7 +194,11 @@ fn spawn_players(
 }
 
 fn start_matchbox_socket(mut commands: Commands) {
-    let room_url = "ws://127.0.0.1:3536/extreme_bevy?next=2";
+    let room_addr = match env::var("MATCHBOX_SERVER_ADDR") {
+        Ok(val) => val,
+        Err(_) => "ws://127.0.0.1:3536".into(),
+    };
+    let room_url = format!("{}/extreme_bevy?next=2", room_addr);
     info!("connecting to matchbox server: {:?}", room_url);
     let (socket, message_loop) = WebRtcSocket::new(room_url);
 

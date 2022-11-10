@@ -1,0 +1,24 @@
+name: tron
+region: sfo
+services:
+  - name: tron
+    dockerfile_path: Dockerfile
+    github:
+      repo: awesomecuber/tron
+      branch: main
+      deploy_on_push: true
+    envs:
+      - key: MATCHBOX_SERVER_ADDR
+        value: wss://tron-2k6cg.ondigitalocean.app/match
+        scope: RUN_TIME
+    routes:
+      - path: /
+  - name: tron-matchmaker
+    image:
+      registry_type: DOCKER_HUB
+      registry: jhelsing
+      repository: matchbox-server
+      tag: "0.4"
+    http_port: 3536
+    routes:
+      - path: /match
